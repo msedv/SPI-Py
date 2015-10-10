@@ -2,6 +2,7 @@
  *	adapted for use in Python
  * 	by Louis Thiery
  * 	Lots more flexibility and cleanup by Connor Wolf (imaginaryindustries.com)
+ * 	10/2015: handling multiple SPI devices by Markus Schwaiger (lists (at) msedv.at)
  *
  * compile for Python using: "python setup.py build"
  * compiled module will be in "./build/lib.linux-armv6l-2.7/spi.so"
@@ -34,26 +35,20 @@ static void pabort(const char *s)
 	abort();
 }
 
-static const char *device = "/dev/spidev0.0";
 static uint8_t mode;
 static uint8_t bits = 8;
 static uint32_t speed = 500000;
 static uint16_t delay;
 
-int ret = 0;
-int fd;
-
-
-static PyObject* openSPI(PyObject *self, PyObject *args, PyObject *kwargs)
-{
-
+static PyObject* openSPI(PyObject *self, PyObject *args, PyObject *kwargs) {
+	int ret = 0;
+	int fd;
+	static const char *device = "/dev/spidev0.0";
 	static char* kwlist[] = {"device", "mode", "bits", "speed", "delay", NULL};
 
 	// Adding some sort of mode parsing would probably be a nice idea for the future, so you don't have to specify it as a bitfield
 	// stuffed into an int.
 	// For the moment the default mode ("0"), will probably work for 99% of people who need a SPI interface, so I'm not working on that
-	//
-
 
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|siiii:keywords", kwlist, &device, &mode, &bits, &speed, &delay))
 		return NULL;
@@ -66,13 +61,13 @@ static PyObject* openSPI(PyObject *self, PyObject *args, PyObject *kwargs)
 
 	PyErr_Clear();
 
-	// printf("Mode: %i, Bits: %i, Speed: %i, Delay: %i\n", mode, bits, speed, delay);
-
-
+	// printf("*** SPI.C openSPI: Mode: %i, Bits: %i, Speed: %i, Delay: %i\n", mode, bits, speed, delay);
 
 	fd = open(device, O_RDWR);
 	if (fd < 0)
 		pabort("can't open device");
+
+	// printf("*** SPI.C openSPI: fd: %i\n", fd);
 
 	/*
 	 * Setup SPI mode
@@ -121,34 +116,38 @@ static PyObject* openSPI(PyObject *self, PyObject *args, PyObject *kwargs)
 	retDict = PyDict_New();
 
 #if PY_MAJOR_VERSION >= 3
+	PyDict_SetItem(retDict, PyBytes_FromString("fd"), PyLong_FromLong((long)fd));
 	PyDict_SetItem(retDict, PyBytes_FromString("mode"), PyLong_FromLong((long)mode));
 	PyDict_SetItem(retDict, PyBytes_FromString("bits"), PyLong_FromLong((long)bits));
 	PyDict_SetItem(retDict, PyBytes_FromString("speed"), PyLong_FromLong((long)speed));
 	PyDict_SetItem(retDict, PyBytes_FromString("delay"), PyLong_FromLong((long)delay));
 #else
+	PyDict_SetItem(retDict, PyString_FromString("fd"), PyInt_FromLong((long)fd));
 	PyDict_SetItem(retDict, PyString_FromString("mode"), PyInt_FromLong((long)mode));
 	PyDict_SetItem(retDict, PyString_FromString("bits"), PyInt_FromLong((long)bits));
 	PyDict_SetItem(retDict, PyString_FromString("speed"), PyInt_FromLong((long)speed));
 	PyDict_SetItem(retDict, PyString_FromString("delay"), PyInt_FromLong((long)delay));
 #endif
 
-
 	return retDict;
 }
 
-
-
-static PyObject* transfer(PyObject* self, PyObject* arg)
-{
+static PyObject* transfer(PyObject* self, PyObject* arg) {
+	int ret = 0;
+	int fd;
 	PyObject* transferTuple;
 
-	if(!PyArg_ParseTuple(arg, "O", &transferTuple))		// "O" - Gets non-NULL borrowed reference to Python argument.
-		return NULL;					// As far as I can tell, it's mostly just copying arg[0] into transferTuple
+								// "O" - Gets non-NULL borrowed reference to Python argument.
+								// As far as I can tell, it's mostly just copying arg[0] into transferTuple
 								// and making sure at least one arg has been passed (I think)
+	if(!PyArg_ParseTuple(arg, "iO", &fd, &transferTuple))
+		return NULL;					
 
-	if(!PyTuple_Check(transferTuple))			// The only argument we support is a single tuple.
+	// printf("*** SPI.C transfer: fd: %i\n", fd);
+
+								// The only argument we support is a single tuple.
+	if(!PyTuple_Check(transferTuple))
 		pabort("Only accepts a single tuple as an argument\n");
-
 
 	uint32_t tupleSize = PyTuple_Size(transferTuple);
 
@@ -194,24 +193,30 @@ static PyObject* transfer(PyObject* self, PyObject* arg)
 		pabort("can't send spi message");
 
 	transferTuple = PyTuple_New(tupleSize);
-	for(i=0;i<tupleSize;i++)
+
+	for (i = 0; i < tupleSize; i++)
 		PyTuple_SetItem(transferTuple, i, Py_BuildValue("i",rx[i]));
 
 	return transferTuple;
 }
 
+static PyObject* closeSPI (PyObject* self, PyObject* arg) {
+	int fd;
 
-static PyObject* closeSPI(PyObject* self,PyObject* args)
-{
-	close(fd);
+	if(!PyArg_ParseTuple(arg, "i", &fd))
+		return NULL;
+
+	// printf ("*** SPI.C closeSPI: fd: %i\n", fd);
+	PyErr_Clear();
+
+	close (fd);
 	Py_RETURN_NONE;
 }
 
-static PyMethodDef SpiMethods[] =
-{
+static PyMethodDef SpiMethods[] = {
 	{"openSPI", (PyCFunction)openSPI, METH_VARARGS | METH_KEYWORDS, "Open SPI Port."},
 	{"transfer", (PyCFunction)transfer, METH_VARARGS, "Transfer data."},
-	{"closeSPI", (PyCFunction)closeSPI, METH_NOARGS, "Close SPI port."},
+	{"closeSPI", (PyCFunction)closeSPI, METH_VARARGS, "Close SPI port."},
 	{NULL, NULL, 0, NULL}
 };
 
@@ -242,6 +247,7 @@ initspi(void)
 #else
 	(void) Py_InitModule("spi", SpiMethods);
 #endif
+;
 
 #if PY_MAJOR_VERSION >= 3
     return module;
